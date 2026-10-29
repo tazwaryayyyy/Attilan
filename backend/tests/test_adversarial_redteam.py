@@ -1,5 +1,6 @@
 import os
 import uuid
+import hashlib
 import logging
 import pytest
 import pytest_asyncio
@@ -97,10 +98,39 @@ class TestRT02RogueDBADestructiveAction:
 
     async def test_live_dba_hard_delete_criminal_events_blocked(self, live_db_conn: asyncpg.Connection):
         """Attempts direct DELETE on primary data table to verify cryptographic tombstone requirements."""
-        target_uuid = uuid.uuid4()
-        
+        source_id = uuid.uuid4()
+        user_id = uuid.uuid4()
+        event_id = uuid.uuid4()
+        sha256_dummy = hashlib.sha256(f"seed_rt02_{source_id}".encode("utf-8")).hexdigest()
+        blake3_dummy = hashlib.sha256(f"seed_rt02_b3_{source_id}".encode("utf-8")).hexdigest()
+
+        # Seed valid underlying DB records via live_db_conn
+        await live_db_conn.execute(
+            """
+            INSERT INTO source_registry (
+                source_id, source_type, document_reference, issuing_authority,
+                publication_date, storage_uri, sha256_hash, blake3_hash, uploaded_by_user_id
+            ) VALUES ($1, 'POLICE_FIR', 'REF-RT02-EVIDENCE', 'Labanchora Police Station', '2026-04-10', 's3://evidence/rt02.pdf', $2, $3, $4);
+            """,
+            source_id,
+            sha256_dummy,
+            blake3_dummy,
+            user_id,
+        )
+
+        await live_db_conn.execute(
+            """
+            INSERT INTO criminal_events (
+                event_id, parent_case_number, event_type, thana_jurisdiction,
+                district, event_date, primary_source_id, procedural_weight, event_summary
+            ) VALUES ($1, 'Khulna Sadar PS Case No. 44(04)2026', 'FIR_REGISTRATION', 'Labanchora KMP', 'Khulna', '2026-04-10', $2, 'FIR_COGNIZANCE', 'Seed event for hard-delete trigger verification');
+            """,
+            event_id,
+            source_id,
+        )
+
         with pytest.raises((asyncpg.exceptions.InsufficientPrivilegeError, asyncpg.exceptions.RaiseError)) as exc_info:
-            await live_db_conn.execute("DELETE FROM criminal_events WHERE event_id = $1;", target_uuid)
+            await live_db_conn.execute("DELETE FROM criminal_events WHERE event_id = $1;", event_id)
             
         error_msg = str(exc_info.value).lower()
         assert any(x in error_msg for x in ["permission denied", "soft-tombstone required", "evidentiary integrity violation"]), \
@@ -186,7 +216,38 @@ class TestRT04FalseIdentityMerge:
         e_uuid_1 = str(uuid.uuid4())
         e_uuid_2 = str(uuid.uuid4())
         source_doc = str(uuid.uuid4())
-        
+        user_uuid = str(uuid.uuid4())
+
+        doc_sha = hashlib.sha256(f"seed_rt04_{source_doc}".encode("utf-8")).hexdigest()
+        doc_blake = hashlib.sha256(f"seed_rt04_b3_{source_doc}".encode("utf-8")).hexdigest()
+
+        # Seed requisite source document record
+        await live_db_conn.execute(
+            """
+            INSERT INTO source_registry (
+                source_id, source_type, document_reference, issuing_authority,
+                publication_date, storage_uri, sha256_hash, blake3_hash, uploaded_by_user_id
+            ) VALUES ($1, 'COURT_ORDER', 'CR-REVISION-2026-101', 'Khulna Sessions Court', '2026-05-18', 's3://evidence/rt04.pdf', $2, $3, $4);
+            """,
+            uuid.UUID(source_doc),
+            doc_sha,
+            doc_blake,
+            uuid.UUID(user_uuid),
+        )
+
+        # Seed both target entities into entities table
+        await live_db_conn.execute(
+            """
+            INSERT INTO entities (
+                entity_id, entity_type, primary_name_bn, primary_name_en, phonetic_hash_bn
+            ) VALUES 
+                ($1, 'INDIVIDUAL', 'মোঃ রফিকুল ইসলাম', 'Md. Rafiqul Islam', 'R123'),
+                ($2, 'INDIVIDUAL', 'রফিকুল ইসলাম', 'Rafiqul Islam', 'R123');
+            """,
+            uuid.UUID(e_uuid_1),
+            uuid.UUID(e_uuid_2),
+        )
+
         # Simulating Authorized multi-sig completion
         result = await commit_same_as_link(
             conn=live_db_conn, # Pass REAL live connection
