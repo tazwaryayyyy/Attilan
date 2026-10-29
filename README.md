@@ -4,7 +4,7 @@
 
 [![Adversarial CI](https://github.com/tazwaryayyyy/Attilan/actions/workflows/adversarial-ci.yml/badge.svg)](https://github.com/tazwaryayyyy/Attilan/actions/workflows/adversarial-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Evidence Act](https://img.shields.io/badge/Admissibility-Evidence_(Amendment)_Act_2022_s.65B-emerald.svg)](res%20gotham.md)
+[![Evidence Act](https://img.shields.io/badge/Admissibility-Evidence_(Amendment)_Act_2022_s.65B-emerald.svg)](README.md)
 [![Database](https://img.shields.io/badge/Engine-PostgreSQL_17_+_PostGIS-blue.svg)](database/schema_stage1.sql)
 
 ---
@@ -129,7 +129,7 @@ docker exec -it opencase_db_core psql -U postgres -d opencase_bd -c "DROP TABLE 
 
 ## 6. Threat Model Verification
 
-Our automated CI test suite verifies the system against the 12 Red-Team Scenarios outlined in `res gotham.md`:
+Our automated CI test suite verifies the system against the 12 Red-Team Scenarios below:
 
 ```bash
 # Run the adversarial Red-Team suite locally
