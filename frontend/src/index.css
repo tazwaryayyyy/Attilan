@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .font-bangla {
+    font-family: 'Tiro Bangla', serif;
+  }
+}
+
+/* Diagonal Evidentiary Watermarks */
+.watermark-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.watermark-pretrial::before {
+  content: "PRE-TRIAL ALLEGATION • NOT JUDICIALLY PROVEN • PRE-TRIAL ALLEGATION • NOT JUDICIALLY PROVEN • ";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-28deg);
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: 0.25em;
+  color: rgba(239, 68, 68, 0.12);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+  width: 250%;
+  text-align: center;
+  text-transform: uppercase;
+  border-top: 2px dashed rgba(239, 68, 68, 0.15);
+  border-bottom: 2px dashed rgba(239, 68, 68, 0.15);
+  padding: 14px 0;
+}
+
+.watermark-unverified::before {
+  content: "UNVERIFIED INTELLIGENCE • ZERO JUDICIAL WEIGHT • UNVERIFIED INTELLIGENCE • ZERO JUDICIAL WEIGHT • ";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-28deg);
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: rgba(148, 163, 184, 0.12);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+  width: 250%;
+  text-align: center;
+  border-top: 2px dashed rgba(148, 163, 184, 0.15);
+  border-bottom: 2px dashed rgba(148, 163, 184, 0.15);
+  padding: 12px 0;
+}
+
+.watermark-acquitted::before {
+  content: "JUDICIALLY ACQUITTED • PRESUMPTION OF INNOCENCE RESTORED • JUDICIALLY ACQUITTED • ";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-28deg);
+  font-size: 1.4rem;
+  font-weight: 800;
+  letter-spacing: 0.2em;
+  color: rgba(52, 211, 153, 0.14);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  user-select: none;
+  width: 250%;
+  text-align: center;
+  border-top: 2px dashed rgba(52, 211, 153, 0.2);
+  border-bottom: 2px dashed rgba(52, 211, 153, 0.2);
+  padding: 12px 0;
+}
