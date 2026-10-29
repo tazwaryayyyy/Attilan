@@ -204,7 +204,7 @@ BEGIN
         v_client_ip := NULLIF(current_setting('opencase.client_ip', true), '')::INET;
     EXCEPTION WHEN OTHERS THEN
         v_client_ip := NULL;
-    END IF;
+    END;
     IF v_client_ip IS NULL THEN
         v_client_ip := COALESCE(inet_client_addr(), '127.0.0.1'::INET);
     END IF;

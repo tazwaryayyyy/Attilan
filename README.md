@@ -27,16 +27,16 @@ Traditional law enforcement systems emphasize centralized surveillance, probabil
 
 ```mermaid
 flowchart TD
-    subgraph Public Internet / Client Tier
+    subgraph client_tier ["Public Internet / Client Tier"]
         Browser["React 18 SPA (Brutalist Forensic UI)"]
         ExternalSyslog["Remote Checkpoint Node (Sec. 65B Audit)"]
     end
 
-    subgraph Edge Security Perimeter (BDIX Host)
+    subgraph edge_sec ["Edge Security Perimeter (BDIX Host)"]
         Nginx["NGINX Gateway (nginx.prod.conf)<br/>• TLS 1.3 Strict Only<br/>• RT-09 Rate Limiter (/export, /events/create)<br/>• Static React Dist Host"]
     end
 
-    subgraph Internal Isolated Network (backend_net)
+    subgraph internal_net ["Internal Isolated Network (backend_net)"]
         FastAPI["FastAPI Engine (:8000)<br/>• Pydantic extra='forbid'<br/>• s.65B Certificate Builder<br/>• Parameterized Session Context"]
         MerkleDaemon["Merkle Broadcaster Daemon<br/>• 300s Polling Cycle<br/>• HMAC-SHA256 Payload Signing<br/>• RT-10 Dual-Insider Defense"]
         Postgres[("PostgreSQL 17 + PostGIS<br/>• C-Level Anti-TRUNCATE Triggers<br/>• Native sql_drop Event Blockers<br/>• Append-Only audit_merkle_ledger")]
