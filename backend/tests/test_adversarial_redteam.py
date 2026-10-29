@@ -20,7 +20,7 @@ from backend.app.services.disambiguation import (
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgres://postgres:postgres@localhost:5432/opencase_test")
 
 
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture(scope="function")
 async def live_db_conn():
     """Establish a direct, low-level asyncpg connection mimicking DBA terminal access."""
     conn = await asyncpg.connect(TEST_DATABASE_URL)
