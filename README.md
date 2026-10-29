@@ -1,8 +1,6 @@
-# ATTILAN(1)
+# ATTILAN
 
-## NAME
-
-`attilan` — controlled criminal-intelligence provenance ledger for Khulna deployments.
+`attilan` — controlled criminal-intelligence provenance ledger for local deployments.
 
 ## ARCHITECTURE
 
