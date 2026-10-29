@@ -2,7 +2,7 @@
 
 > **Stage D Production Pilot**: Append-Only Merkle Ledger, WORM S3 Object Storage, and Deterministic Entity Disambiguation for High-Assurance Evidence Administration.
 
-[![Adversarial CI](https://github.com/attilan-defense/attilan/actions/workflows/adversarial-ci.yml/badge.svg)](https://github.com/attilan-defense/attilan/actions/workflows/adversarial-ci.yml)
+[![Adversarial CI](https://github.com/tazwaryayyyy/Attilan/actions/workflows/adversarial-ci.yml/badge.svg)](https://github.com/tazwaryayyyy/Attilan/actions/workflows/adversarial-ci.yml)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Evidence Act](https://img.shields.io/badge/Admissibility-Evidence_(Amendment)_Act_2022_s.65B-emerald.svg)](res%20gotham.md)
 [![Database](https://img.shields.io/badge/Engine-PostgreSQL_17_+_PostGIS-blue.svg)](database/schema_stage1.sql)
@@ -85,7 +85,7 @@ flowchart TD
 ### 1. Environment Configuration
 Clone the repository and copy the environment template:
 ```bash
-git clone https://github.com/attilan-defense/attilan.git
+git clone https://github.com/tazwaryayyyy/Attilan.git
 cd attilan
 cp .env.example .env
 ```
