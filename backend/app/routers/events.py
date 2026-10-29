@@ -2,10 +2,11 @@ from datetime import date
 from typing import Optional
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.database import db_manager
+from backend.app.auth import AuthenticatedUser, require_clearance
 
 router = APIRouter(prefix="/events", tags=["Documented Criminal Events & Soft-Tombstoning"])
 
@@ -66,10 +67,13 @@ class TombstoneResponse(BaseModel):
 
 
 @router.post("/create", status_code=status.HTTP_201_CREATED)
-async def create_event(payload: EventCreateRequest, request: Request):
+async def create_event(
+    payload: EventCreateRequest,
+    request: Request,
+    current_user: AuthenticatedUser = Depends(require_clearance("criminal:write")),
+):
     """Creates a new criminal event linked to an authenticated source."""
-    actor_header = request.headers.get("X-Actor-User-Id")
-    actor_id = uuid.UUID(actor_header) if actor_header else uuid.uuid4()
+    actor_id = current_user.user_id
     client_ip = request.client.host if request.client else "127.0.0.1"
 
     # Adversarial Defense (res gotham.md Section 16 RT-01: Fabricated Lawfare Injection)
@@ -95,7 +99,11 @@ async def create_event(payload: EventCreateRequest, request: Request):
                 "message": "Submission quarantined: Unverified FIR missing verified District Court registry token.",
             }
 
-    async for conn in db_manager.get_connection(actor_user_id=actor_id, client_ip=client_ip):
+    async with db_manager.connection(
+        actor_user_id=actor_id,
+        actor_clearances=current_user.clearances,
+        client_ip=client_ip,
+    ) as conn:
         event_id = uuid.uuid4()
         query = """
             INSERT INTO criminal_events (
@@ -125,6 +133,7 @@ async def tombstone_and_supersede_event(
     event_id: uuid.UUID,
     payload: SoftTombstoneRequest,
     request: Request,
+    current_user: AuthenticatedUser = Depends(require_clearance("criminal:write")),
 ) -> TombstoneResponse:
     """
     Controlled Correction & Cryptographic Soft-Tombstoning Controller:
@@ -133,13 +142,16 @@ async def tombstone_and_supersede_event(
     2. Writes active V2 event record into criminal_events pointing to new court source.
     3. Mutates V1 record to is_superseded = TRUE, links superseded_by_event_id = V2_UUID,
        and records legal_justification text.
-    4. Triggers on criminal_events calculate Merkle audit leaves for both records.
+    4. Triggers on criminal_events append sequential hash-chain leaves for both records.
     """
-    actor_header = request.headers.get("X-Actor-User-Id")
-    actor_id = uuid.UUID(actor_header) if actor_header else uuid.uuid4()
+    actor_id = current_user.user_id
     client_ip = request.client.host if request.client else "127.0.0.1"
 
-    async for conn in db_manager.get_connection(actor_user_id=actor_id, client_ip=client_ip):
+    async with db_manager.connection(
+        actor_user_id=actor_id,
+        actor_clearances=current_user.clearances,
+        client_ip=client_ip,
+    ) as conn:
         async with conn.transaction():
             # 1. Fetch existing V1 record
             v1_row = await conn.fetchrow(
@@ -229,4 +241,3 @@ async def tombstone_and_supersede_event(
                 message="Record successfully soft-tombstoned. Historical V1 preserved in audit trail with legal justification; V2 is now the active state.",
             )
 
-    raise HTTPException(status_code=500, detail="Database transaction failed.")

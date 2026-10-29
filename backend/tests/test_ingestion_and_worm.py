@@ -1,11 +1,14 @@
 import io
 from datetime import date
+from contextlib import asynccontextmanager
+import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from minio.error import S3Error
 
 from backend.app.services.hasher import CryptographicHasher
 from backend.app.services.storage import MinioWORMStorage
+from backend.tests.conftest import auth_headers
 
 
 class TestCryptographicIntegrity:
@@ -105,10 +108,11 @@ class TestIngestAPIWorkflow:
             "storage_uri": "s3://opencase-evidence-worm/evidence/2026/sample.pdf",
         }
 
-        async def mock_get_conn(*args, **kwargs):
+        @asynccontextmanager
+        async def mock_connection(**kwargs):
             yield mock_conn
 
-        mock_db_manager.get_connection = mock_get_conn
+        mock_db_manager.connection = mock_connection
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -119,7 +123,12 @@ class TestIngestAPIWorkflow:
                 "issuing_authority": "Sessions Court, Khulna",
                 "publication_date": "2026-05-12",
             }
-            response = await client.post("/ingest", files=files, data=data)
+            response = await client.post(
+                "/ingest",
+                files=files,
+                data=data,
+                headers=auth_headers(uuid.uuid4(), ["evidence:ingest"]),
+            )
 
             assert response.status_code == 409
             json_resp = response.json()

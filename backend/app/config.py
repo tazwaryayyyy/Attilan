@@ -1,52 +1,49 @@
-import os
+from urllib.parse import urlparse
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "OpenCase-BD Evidence Integrity Platform"
-    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
+    PROJECT_NAME: str = "Attilan"
+    ENVIRONMENT: str = "production"
 
-    # Database
-    DATABASE_URL: str = Field(
-        default_factory=lambda: os.getenv(
-            "DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/opencase_bd"
-        ),
-        description="Async PostgreSQL connection string",
-    )
+    # Empty values intentionally fail closed at connection/authentication time.
+    # No development credentials are embedded in application code.
+    DATABASE_URL: str = Field(default="")
+    MINIO_ENDPOINT: str = Field(default="")
+    MINIO_ACCESS_KEY: str = Field(default="")
+    MINIO_SECRET_KEY: str = Field(default="")
+    MINIO_SECURE: bool = Field(default=True)
+    MINIO_EVIDENCE_BUCKET: str = Field(default="")
+    MINIO_RETENTION_YEARS: int = Field(default=10, ge=1)
 
-    # MinIO / S3 WORM Storage
-    MINIO_ENDPOINT: str = Field(
-        default_factory=lambda: os.getenv("MINIO_ENDPOINT", "localhost:9000"),
-        description="MinIO S3 Host:Port",
-    )
-    MINIO_ACCESS_KEY: str = Field(
-        default_factory=lambda: os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
-        description="MinIO Access Key",
-    )
-    MINIO_SECRET_KEY: str = Field(
-        default_factory=lambda: os.getenv("MINIO_SECRET_KEY", "minioadmin"),
-        description="MinIO Secret Key",
-    )
-    MINIO_SECURE: bool = Field(
-        default_factory=lambda: os.getenv("MINIO_SECURE", "false").lower() == "true",
-        description="Use TLS/SSL for MinIO",
-    )
-    MINIO_EVIDENCE_BUCKET: str = Field(
-        default_factory=lambda: os.getenv("MINIO_EVIDENCE_BUCKET", "opencase-evidence-worm"),
-        description="Write-Once-Read-Many bucket with Object Lock enabled",
-    )
-    MINIO_RETENTION_YEARS: int = Field(
-        default_factory=lambda: int(os.getenv("MINIO_RETENTION_YEARS", "7")),
-        description="WORM retention period in years",
-    )
+    JWT_SECRET_KEY: str = Field(default="")
+    JWT_ALGORITHM: str = Field(default="HS256")
+    JWT_ISSUER: str = Field(default="")
+    JWT_AUDIENCE: str = Field(default="")
+    CORS_ALLOWED_ORIGINS: str = Field(default="")
 
-    # JWT Authentication
-    JWT_SECRET_KEY: str = Field(
-        default_factory=lambda: os.getenv("JWT_SECRET_KEY", ""),
-        description="HMAC secret key for JWT validation",
-    )
-    JWT_ALGORITHM: str = "HS256"
+    @field_validator("DATABASE_URL")
+    @classmethod
+    def require_bounded_database_identity(cls, value: str) -> str:
+        if not value:
+            return value
+        username = urlparse(value).username
+        if username not in {"api_worker_login", "api_worker"}:
+            raise ValueError("DATABASE_URL must authenticate through the api_worker role boundary")
+        return value
+
+    @field_validator("JWT_ALGORITHM")
+    @classmethod
+    def permit_only_hmac_sha256(cls, value: str) -> str:
+        if value != "HS256":
+            raise ValueError("JWT_ALGORITHM must be HS256 until asymmetric issuer keys are deployed")
+        return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip() for origin in self.CORS_ALLOWED_ORIGINS.split(",") if origin.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

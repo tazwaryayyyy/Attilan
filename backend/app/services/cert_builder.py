@@ -1,160 +1,126 @@
+"""Unsigned mathematical digest manifests; certificate signing is intentionally absent."""
+
 from datetime import datetime, timezone
-import platform
-import time
+import hashlib
+import json
+import logging
 from typing import Any, Dict, Optional
 import uuid
-import psutil
+
+from blake3 import blake3
 from pydantic import BaseModel, Field
 
 
-class S65BCertificateModel(BaseModel):
-    certificate_id: uuid.UUID
-    statutory_authority: str = Field(
-        default="Evidence (Amendment) Act 2022, Section 65B(4) & ICT Act 2006, Section 85A-85C"
-    )
-    certificate_issuance_timestamp: str
+CERT_STATUS_WARNING = (
+    "[CERT-STATUS]: RAW DIGESTS GENERATED. CA HARDWARE X.509 MODULE UNAVAILABLE. "
+    "AWAITING SECTION 65B MANUAL HARDWARE HSM KEY PLUG-IN."
+)
+logger = logging.getLogger("attilan.digest_manifest")
+
+
+class RawDigestManifest(BaseModel):
+    manifest_id: uuid.UUID
+    generated_at_utc: str
     target_source_id: uuid.UUID
+    requested_by_user_id: uuid.UUID
     document_reference: str
     issuing_authority: str
     publication_date: str
     storage_uri: str
     file_sha256: str
     file_blake3: str
-    merkle_leaf_index: Optional[int]
-    merkle_leaf_hash: Optional[str]
-    system_operational_status: Dict[str, Any]
-    legal_custodian_declaration: Dict[str, Any]
-    x509_signature_block: Dict[str, Any]
+    manifest_sha256: str
+    manifest_blake3: str
+    sequential_hash_chain_index: Optional[int]
+    sequential_hash_chain_hash: Optional[str]
+    certification_status: str = Field(default="UNCERTIFIED_RAW_DIGEST_MANIFEST")
+    warnings: list[str]
     markdown_representation: str
 
 
-class CertificateGenerator:
-    """Compiles statutory Evidence Act Section 65B(4) certificates of authenticity."""
+class DigestManifestGenerator:
+    """Produces only deterministic SHA-256 and BLAKE3 values over canonical data."""
+
+    @staticmethod
+    def _validate_digest(value: Any, label: str) -> str:
+        normalized = str(value).lower()
+        if len(normalized) != 64 or any(char not in "0123456789abcdef" for char in normalized):
+            raise ValueError(f"{label} must be a 64-character hexadecimal digest")
+        return normalized
 
     @classmethod
-    def get_system_metrics(cls) -> Dict[str, Any]:
-        boot_timestamp = psutil.boot_time()
-        uptime_seconds = int(time.time() - boot_timestamp)
-        days = uptime_seconds // 86400
-        hours = (uptime_seconds % 86400) // 3600
-        minutes = (uptime_seconds % 3600) // 60
-
-        return {
-            "server_hostname": platform.node(),
-            "operating_system": f"{platform.system()} {platform.release()}",
-            "system_boot_time_utc": datetime.fromtimestamp(boot_timestamp, timezone.utc).isoformat(),
-            "uptime_duration": f"{days} days, {hours} hours, {minutes} minutes ({uptime_seconds} seconds)",
-            "system_integrity_check": "NORMAL_OPERATION_NO_TAMPERING_DETECTED",
-            "statutory_regular_use_attestation": (
-                "The computer and secure storage subsystem was in regular use by authorized personnel "
-                "throughout the relevant operational period. Input data was regularly fed into the system "
-                "in the ordinary course of business. The system operated properly without hardware or software "
-                "malfunctions affecting the accuracy of the electronic record."
-            ),
-        }
-
-    @classmethod
-    def generate_certificate(
+    def generate_manifest(
         cls,
         source_record: Dict[str, Any],
-        merkle_record: Optional[Dict[str, Any]],
-        operator_uuid: uuid.UUID,
-        operator_role: str = "Authorized Custodian of Digital Evidence & Intelligence Systems",
-    ) -> S65BCertificateModel:
-        cert_id = uuid.uuid4()
-        now_utc = datetime.now(timezone.utc).isoformat()
-        metrics = cls.get_system_metrics()
+        ledger_record: Optional[Dict[str, Any]],
+        requested_by: uuid.UUID,
+    ) -> RawDigestManifest:
+        # This visible warning is deliberately emitted for every manifest request;
+        # it prevents consumers from mistaking a digest for a hardware-backed signature.
+        print(CERT_STATUS_WARNING)
+        logger.warning(CERT_STATUS_WARNING)
 
-        leaf_idx = merkle_record.get("leaf_index") if merkle_record else None
-        leaf_hash = merkle_record.get("current_leaf_hash") if merkle_record else None
+        file_sha256 = cls._validate_digest(source_record["sha256_hash"], "SHA-256")
+        file_blake3 = cls._validate_digest(source_record["blake3_hash"], "BLAKE3")
+        chain_index = ledger_record.get("leaf_index") if ledger_record else None
+        chain_hash = ledger_record.get("current_leaf_hash") if ledger_record else None
+        if chain_hash is not None:
+            chain_hash = cls._validate_digest(chain_hash, "sequential hash-chain")
 
-        # Standard X.509 Digital Signature block stub conforming to licensed Certifying Authority (CA) standards
-        x509_block = {
-            "signing_algorithm": "SHA256withRSA / ECDSA secp256r1",
-            "certificate_issuer": "CN=OpenCase-BD High Assurance Internal CA, O=Evidence Integrity Consortium, C=BD",
-            "serial_number": f"CA-BD-2026-{cert_id.hex[:12].upper()}",
-            "valid_from": now_utc,
-            "signature_status": "CRYPTOGRAPHICALLY_SEALED",
-            "signed_digest": source_record["sha256_hash"],
-            "digital_signature_hex": (
-                f"3045022100{source_record['sha256_hash'][:32]}0220{source_record['blake3_hash'][:32]}"
-            ),
+        canonical_payload = {
+            "source_id": str(source_record["source_id"]),
+            "sha256": file_sha256,
+            "blake3": file_blake3,
+            "sequential_hash_chain_index": chain_index,
+            "sequential_hash_chain_hash": chain_hash,
         }
+        canonical_bytes = json.dumps(
+            canonical_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        manifest_sha256 = hashlib.sha256(canonical_bytes).hexdigest()
+        manifest_blake3 = blake3(canonical_bytes).hexdigest()
+        manifest_id = uuid.uuid4()
+        generated_at = datetime.now(timezone.utc).isoformat()
 
-        declaration = {
-            "operator_user_id": str(operator_uuid),
-            "official_position": operator_role,
-            "statutory_declaration": (
-                "I, the undersigned custodian, hereby certify pursuant to Section 65B(4) of the Evidence Act 2022 "
-                "that the electronic document described herein is an exact, unaltered bit-level reproduction derived "
-                "from the secure WORM object storage and verified against the append-only cryptographic Merkle ledger. "
-                "No subsequent unauthorized alterations have occurred."
-            ),
-        }
+        markdown = f"""# RAW DIGEST MANIFEST — UNCERTIFIED
 
-        md_doc = f"""# CERTIFICATE OF DIGITAL EVIDENCE AUTHENTICITY
-### Pursuant to Section 65B(4) of the Evidence (Amendment) Act 2022
-**Certificate Identifier:** `{cert_id}`  
-**Issuance Date (UTC):** `{now_utc}`  
+{CERT_STATUS_WARNING}
 
----
+- Manifest ID: `{manifest_id}`
+- Generated (UTC): `{generated_at}`
+- Source ID: `{source_record['source_id']}`
+- Document reference: `{source_record['document_reference']}`
+- Issuing authority: `{source_record['issuing_authority']}`
+- Storage URI: `{source_record['storage_uri']}`
+- File SHA-256: `{file_sha256}`
+- File BLAKE3: `{file_blake3}`
+- Sequential hash-chain index: `{chain_index if chain_index is not None else 'unavailable'}`
+- Sequential hash-chain hash: `{chain_hash or 'unavailable'}`
+- Canonical manifest SHA-256: `{manifest_sha256}`
+- Canonical manifest BLAKE3: `{manifest_blake3}`
 
-### 1. Description of the Electronic Record
-- **Target Source ID:** `{source_record['source_id']}`
-- **Document Reference:** {source_record['document_reference']}
-- **Issuing Authority:** {source_record['issuing_authority']}
-- **Publication / Record Date:** {source_record['publication_date']}
-- **Ingestion Timestamp (UTC):** {source_record['ingestion_timestamp']}
-- **Storage Location (WORM):** `{source_record['storage_uri']}`
-
-### 2. Cryptographic Provenance & Dual Hashes
-- **Primary Digest (SHA-256):**  
-  `{source_record['sha256_hash']}`
-- **Secondary Digest (BLAKE3):**  
-  `{source_record['blake3_hash']}`
-- **Audit Merkle Leaf Sequence:** `{leaf_idx or 'N/A'}`
-- **Merkle Cumulative Leaf Hash:** `{leaf_hash or 'N/A'}`
-
-### 3. Device & Operating System Parameters (s. 65B(2))
-- **Host Machine:** `{metrics['server_hostname']}`
-- **Platform:** `{metrics['operating_system']}`
-- **System Boot Time:** `{metrics['system_boot_time_utc']}`
-- **System Uptime at Issuance:** `{metrics['uptime_duration']}`
-- **Operational Condition:** `{metrics['system_integrity_check']}`
-
-*{metrics['statutory_regular_use_attestation']}*
-
-### 4. Official Declaration & Chain of Custody
-- **Custodian User ID:** `{operator_uuid}`
-- **Official Capacity:** {operator_role}
-
-> "{declaration['statutory_declaration']}"
-
-### 5. X.509 Secure Cryptographic Signature Block
-```
-[X.509 DIGITAL CERTIFICATE BLOCK]
-Issuer: {x509_block['certificate_issuer']}
-Serial: {x509_block['serial_number']}
-Digest: {x509_block['signed_digest']}
-Sig:    {x509_block['digital_signature_hex']}
-Status: {x509_block['signature_status']}
-```
+This output is a mathematical digest manifest only. It is not an X.509 certificate,
+does not assert structural tamper detection, and requires manual hardware-HSM signing
+before any Section 65B certification claim.
 """
 
-        return S65BCertificateModel(
-            certificate_id=cert_id,
-            certificate_issuance_timestamp=now_utc,
+        return RawDigestManifest(
+            manifest_id=manifest_id,
+            generated_at_utc=generated_at,
             target_source_id=source_record["source_id"],
+            requested_by_user_id=requested_by,
             document_reference=source_record["document_reference"],
             issuing_authority=source_record["issuing_authority"],
             publication_date=str(source_record["publication_date"]),
             storage_uri=source_record["storage_uri"],
-            file_sha256=source_record["sha256_hash"],
-            file_blake3=source_record["blake3_hash"],
-            merkle_leaf_index=leaf_idx,
-            merkle_leaf_hash=leaf_hash,
-            system_operational_status=metrics,
-            legal_custodian_declaration=declaration,
-            x509_signature_block=x509_block,
-            markdown_representation=md_doc,
+            file_sha256=file_sha256,
+            file_blake3=file_blake3,
+            manifest_sha256=manifest_sha256,
+            manifest_blake3=manifest_blake3,
+            sequential_hash_chain_index=chain_index,
+            sequential_hash_chain_hash=chain_hash,
+            warnings=[CERT_STATUS_WARNING],
+            markdown_representation=markdown,
         )

@@ -1,4 +1,5 @@
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 from unittest.mock import AsyncMock, patch
 import pytest
@@ -9,6 +10,7 @@ from backend.app.services.disambiguation import (
     BengaliDisambiguationEvaluator,
     BengaliPhoneticEngine,
 )
+from backend.tests.conftest import auth_headers, issue_token
 
 
 class TestBengaliDisambiguationEvaluator:
@@ -59,6 +61,43 @@ class TestBengaliDisambiguationEvaluator:
         assert candidate.composite_score < 0.85
         assert "TREATED AS DISTINCT ENTITY" in candidate.adjudication_status
 
+    @patch("backend.app.routers.entity.db_manager")
+    @pytest.mark.asyncio
+    async def test_router_uses_candidate_age_and_jurisdiction_not_target_values(self, mock_db_manager):
+        """Locks the historical self-comparison false-positive regression."""
+        from backend.app.routers.entity import evaluate_disambiguation_queue, DisambiguationQuery
+        from fastapi import Request
+
+        candidate_id = uuid.uuid4()
+        mock_conn = AsyncMock()
+        mock_conn.fetch.return_value = [
+            {
+                "entity_id": candidate_id,
+                "primary_name_bn": "মোঃ রফিকুল ইসলাম",
+                "primary_name_en": "Md. Rafiqul Islam",
+                "father_name_bn": "আব্দুর রহমান",
+                "thana_jurisdiction": "Rupsha",
+                "age": 19,
+            }
+        ]
+
+        @asynccontextmanager
+        async def mock_connection(**kwargs):
+            yield mock_conn
+
+        mock_db_manager.connection = mock_connection
+        response = await evaluate_disambiguation_queue(
+            DisambiguationQuery(
+                primary_name_bn="মোঃ রফিকুল ইসলাম",
+                father_name_bn="আব্দুর রহমান",
+                thana_jurisdiction="Labanchora",
+                age=42,
+            ),
+            Request({"type": "http", "client": ("127.0.0.1", 0), "headers": []}),
+            current_user=type("User", (), {"user_id": uuid.uuid4(), "clearances": frozenset({"entity:read"})})(),
+        )
+        assert response.candidate_matches == []
+
 
 @pytest.mark.asyncio
 class TestSecurityBarrierAndDualKeyResolution:
@@ -75,12 +114,12 @@ class TestSecurityBarrierAndDualKeyResolution:
                 "source_document_id": str(uuid.uuid4()),
                 "contextual_label": "ATTEMPTED SINGLE USER MERGE",
                 "confidence_score": 0.95,
-                "operator_key_1": user_uuid,
-                "operator_key_2": user_uuid,  # Identical key attempt
             }
-            resp = await client.post("/entity/resolve_conflict", json=payload)
+            headers = auth_headers(uuid.UUID(user_uuid), ["entity:resolve"])
+            headers["X-Dual-Control-Authorization"] = f"Bearer {issue_token(uuid.UUID(user_uuid), ['entity:resolve'])}"
+            resp = await client.post("/entity/resolve_conflict", json=payload, headers=headers)
             assert resp.status_code == 403
-            assert "Four-Eyes Principle" in resp.json()["detail"]
+            assert "independently authenticated" in resp.json()["detail"]
 
     @patch("backend.app.routers.entity.db_manager")
     async def test_dual_key_resolution_success(self, mock_db_manager):
@@ -92,10 +131,11 @@ class TestSecurityBarrierAndDualKeyResolution:
         ]
         mock_conn.execute.return_value = None
 
-        async def mock_get_conn(*args, **kwargs):
+        @asynccontextmanager
+        async def mock_connection(**kwargs):
             yield mock_conn
 
-        mock_db_manager.get_connection = mock_get_conn
+        mock_db_manager.connection = mock_connection
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -105,10 +145,12 @@ class TestSecurityBarrierAndDualKeyResolution:
                 "source_document_id": str(uuid.uuid4()),
                 "contextual_label": "CONFIRMED SAME AS VIA NID CROSS-CHECK",
                 "confidence_score": 0.95,
-                "operator_key_1": str(uuid.uuid4()),
-                "operator_key_2": str(uuid.uuid4()),  # Distinct secondary key
             }
-            resp = await client.post("/entity/resolve_conflict", json=payload)
+            primary_user = uuid.uuid4()
+            secondary_user = uuid.uuid4()
+            headers = auth_headers(primary_user, ["entity:resolve"])
+            headers["X-Dual-Control-Authorization"] = f"Bearer {issue_token(secondary_user, ['entity:resolve'])}"
+            resp = await client.post("/entity/resolve_conflict", json=payload, headers=headers)
             assert resp.status_code == 201
             data = resp.json()
             assert data["relationship_type"] == "SAME_AS"
@@ -145,10 +187,11 @@ class TestSoftTombstoningController:
         ]
         mock_conn.execute.return_value = None
 
-        async def mock_get_conn(*args, **kwargs):
+        @asynccontextmanager
+        async def mock_connection(**kwargs):
             yield mock_conn
 
-        mock_db_manager.get_connection = mock_get_conn
+        mock_db_manager.connection = mock_connection
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -160,7 +203,11 @@ class TestSoftTombstoningController:
                 "new_event_summary": "Sessions Judge Court acquitted accused of all charges.",
                 "new_event_date": "2026-06-15",
             }
-            resp = await client.post(f"/events/{v1_event_id}/tombstone_and_supersede", json=payload)
+            resp = await client.post(
+                f"/events/{v1_event_id}/tombstone_and_supersede",
+                json=payload,
+                headers=auth_headers(uuid.uuid4(), ["criminal:write"]),
+            )
             assert resp.status_code == 200
             data = resp.json()
             assert data["status"] == "MUTATED_TO_SUPERSEDED"

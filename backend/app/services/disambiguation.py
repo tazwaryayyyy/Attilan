@@ -210,8 +210,8 @@ async def commit_same_as_link(
     entity_a_id: str,
     entity_b_id: str,
     source_document_id: str,
-    operator_key_1: str,
-    operator_key_2: str,
+    primary_authenticated_user_id: str,
+    secondary_authenticated_user_id: str,
     contextual_label: str = "MANUALLY CONFIRMED SAME PERSON VIA DUAL-KEY ADJUDICATION",
     confidence_score: float = 1.0,
 ) -> Dict[str, Any]:
@@ -222,20 +222,20 @@ async def commit_same_as_link(
     """
     import uuid
 
-    if str(operator_key_1).strip() == str(operator_key_2).strip():
-        raise ValueError("Four-Eyes Principle: Two distinct operator keys required.")
+    if str(primary_authenticated_user_id).strip() == str(secondary_authenticated_user_id).strip():
+        raise ValueError("Four-Eyes Principle: Two distinct authenticated users required.")
 
     def to_uuid(val: Any) -> uuid.UUID:
         try:
             return uuid.UUID(str(val))
-        except ValueError:
-            return uuid.uuid5(uuid.NAMESPACE_DNS, str(val))
+        except ValueError as exc:
+            raise ValueError("Authenticated identity and entity values must be UUIDs") from exc
 
     uuid_a = to_uuid(entity_a_id)
     uuid_b = to_uuid(entity_b_id)
     uuid_doc = to_uuid(source_document_id)
-    uuid_op1 = to_uuid(operator_key_1)
-    uuid_op2 = to_uuid(operator_key_2)
+    uuid_op1 = to_uuid(primary_authenticated_user_id)
+    uuid_op2 = to_uuid(secondary_authenticated_user_id)
     edge_id = uuid.uuid4()
 
     # Pre-populate parent rows if running against live DB with strict foreign keys

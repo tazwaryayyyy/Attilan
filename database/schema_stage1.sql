@@ -11,6 +11,67 @@ CREATE EXTENSION IF NOT EXISTS "postgis";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
 --------------------------------------------------------------------------------
+-- 0. Role boundaries and transaction context
+--------------------------------------------------------------------------------
+-- db_owner is a non-login ownership role. api_worker is deliberately NOLOGIN:
+-- the API authenticates through api_worker_login and immediately SET LOCAL ROLE
+-- api_worker inside a transaction. This prevents the network credential from
+-- being a table-owning or superuser credential.
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'db_owner') THEN
+        CREATE ROLE db_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'api_worker') THEN
+        CREATE ROLE api_worker NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'api_worker_login') THEN
+        CREATE ROLE api_worker_login LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'audit_reader') THEN
+        CREATE ROLE audit_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'audit_replica_login') THEN
+        CREATE ROLE audit_replica_login LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+    END IF;
+END $$;
+
+GRANT api_worker TO api_worker_login;
+GRANT audit_reader TO audit_replica_login;
+
+-- The entrypoint supplies these secrets only at initialization time. Refuse to
+-- build roles with a baked-in or blank credential.
+\getenv api_worker_password API_WORKER_PASSWORD
+\getenv audit_replica_password AUDIT_REPLICA_PASSWORD
+\if :{?api_worker_password}
+\else
+\quit 3
+\endif
+\if :{?audit_replica_password}
+\else
+\quit 3
+\endif
+SELECT format('ALTER ROLE api_worker_login PASSWORD %L', :'api_worker_password') \gexec
+SELECT format('ALTER ROLE audit_replica_login PASSWORD %L', :'audit_replica_password') \gexec
+
+CREATE SCHEMA IF NOT EXISTS app AUTHORIZATION db_owner;
+
+CREATE OR REPLACE FUNCTION app.current_actor_id()
+RETURNS UUID
+LANGUAGE SQL
+STABLE
+AS $$
+    SELECT NULLIF(current_setting('app.current_actor_id', true), '')::UUID;
+$$;
+
+CREATE OR REPLACE FUNCTION app.has_clearance(required_clearance TEXT)
+RETURNS BOOLEAN
+LANGUAGE SQL
+STABLE
+AS $$
+    SELECT COALESCE(current_setting('app.current_clearances', true), '[]')::JSONB ? required_clearance;
+$$;
+
+--------------------------------------------------------------------------------
 -- 1. Epistemological Qualification Domain
 --------------------------------------------------------------------------------
 DO $$ BEGIN
@@ -100,10 +161,16 @@ CREATE TABLE IF NOT EXISTS entities (
     phonetic_hash_bn VARCHAR(64) NOT NULL, -- Bengali Soundex/Metaphone hash
     national_id_hash CHAR(64), -- SHA-256 of NID if lawfully available (NULL otherwise)
     father_name_bn VARCHAR(255),
+    thana_jurisdiction VARCHAR(128),
+    age SMALLINT CHECK (age IS NULL OR age BETWEEN 0 AND 130),
     disambiguation_confidence NUMERIC(5,2) NOT NULL DEFAULT 50.00,
     is_identity_disputed BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Safe for initialization and for schema re-application to existing databases.
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS thana_jurisdiction VARCHAR(128);
+ALTER TABLE entities ADD COLUMN IF NOT EXISTS age SMALLINT CHECK (age IS NULL OR age BETWEEN 0 AND 130);
 
 -- 2.4 Provenance-Linked Assertions (The Edge: Connects Entity to Event)
 CREATE TABLE IF NOT EXISTS event_assertions (
@@ -133,7 +200,7 @@ CREATE TABLE IF NOT EXISTS entity_edges (
     CONSTRAINT chk_no_self_loop CHECK (source_entity_id <> target_entity_id)
 );
 
--- 2.6 Append-Only Tamper-Evident Merkle Audit Ledger
+-- 2.6 Append-Only Tamper-Evident Sequential Hash Chain Ledger
 CREATE TABLE IF NOT EXISTS audit_merkle_ledger (
     leaf_index BIGSERIAL PRIMARY KEY,
     timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -157,20 +224,20 @@ CREATE INDEX IF NOT EXISTS idx_event_assertions_entity ON event_assertions(entit
 CREATE INDEX IF NOT EXISTS idx_event_assertions_event ON event_assertions(event_id);
 CREATE INDEX IF NOT EXISTS idx_entity_edges_source ON entity_edges(source_entity_id);
 CREATE INDEX IF NOT EXISTS idx_entity_edges_target ON entity_edges(target_entity_id);
-CREATE INDEX IF NOT EXISTS idx_merkle_current_hash ON audit_merkle_ledger(current_leaf_hash);
+CREATE INDEX IF NOT EXISTS idx_hash_chain_current_hash ON audit_merkle_ledger(current_leaf_hash);
 
 --------------------------------------------------------------------------------
--- 3. Cryptographic Merkle Ledger Trigger Engine
+-- 3. Cryptographic Sequential Hash Chain Trigger Engine
 --------------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS merkle_mutex (
+CREATE TABLE IF NOT EXISTS hash_chain_mutex (
     id INT PRIMARY KEY DEFAULT 1,
     locked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT single_row CHECK (id = 1)
 );
-INSERT INTO merkle_mutex (id) VALUES (1) ON CONFLICT DO NOTHING;
+INSERT INTO hash_chain_mutex (id) VALUES (1) ON CONFLICT DO NOTHING;
 
-CREATE OR REPLACE FUNCTION process_audit_merkle_event()
+CREATE OR REPLACE FUNCTION process_sequential_hash_chain_event()
 RETURNS TRIGGER AS $$
 DECLARE
     v_prev_leaf_hash CHAR(64);
@@ -190,23 +257,20 @@ BEGIN
     v_target_table := TG_TABLE_NAME;
     v_now := clock_timestamp();
 
-    -- Extract Actor User ID and Client IP from session context (safe fallbacks)
-    BEGIN
-        v_actor_user_id := NULLIF(current_setting('opencase.actor_user_id', true), '')::UUID;
-    EXCEPTION WHEN OTHERS THEN
-        v_actor_user_id := NULL;
-    END;
+    -- The API sets these verified JWT claims with SET LOCAL. No anonymous audit
+    -- attribution is allowed on the shared worker pool.
+    v_actor_user_id := app.current_actor_id();
     IF v_actor_user_id IS NULL THEN
-        v_actor_user_id := '00000000-0000-0000-0000-000000000000'::UUID;
+        RAISE EXCEPTION 'RLS CONTEXT MISSING: app.current_actor_id is required.';
     END IF;
 
     BEGIN
-        v_client_ip := NULLIF(current_setting('opencase.client_ip', true), '')::INET;
+        v_client_ip := NULLIF(current_setting('app.client_ip', true), '')::INET;
     EXCEPTION WHEN OTHERS THEN
         v_client_ip := NULL;
     END;
     IF v_client_ip IS NULL THEN
-        v_client_ip := COALESCE(inet_client_addr(), '127.0.0.1'::INET);
+        v_client_ip := COALESCE(inet_client_addr(), '0.0.0.0'::INET);
     END IF;
 
     -- Determine Operation Type and Target UUID
@@ -245,8 +309,8 @@ BEGIN
     -- Calculate SHA-256 Data Payload Hash
     v_payload_hash := encode(digest(v_payload_json::TEXT, 'sha256'), 'hex');
 
-    -- Serialized Merkle Hash Generation: Lock mutex to guarantee linear sequence
-    PERFORM 1 FROM merkle_mutex WHERE id = 1 FOR UPDATE;
+    -- Serialized chain hashing: lock the mutex to guarantee a linear sequence.
+    PERFORM 1 FROM hash_chain_mutex WHERE id = 1 FOR UPDATE;
 
     -- Fetch latest leaf hash
     SELECT current_leaf_hash INTO v_prev_leaf_hash
@@ -265,7 +329,7 @@ BEGIN
     v_combined_payload := v_next_index::TEXT || v_now::TEXT || v_prev_leaf_hash || v_payload_hash;
     v_current_leaf_hash := encode(digest(v_combined_payload, 'sha256'), 'hex');
 
-    -- Insert into immutable Merkle ledger
+    -- Insert into immutable sequential hash-chain ledger
     INSERT INTO audit_merkle_ledger (
         leaf_index,
         timestamp,
@@ -292,33 +356,38 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, app;
 
--- Attach Merkle Triggers for Insert & Update
+-- Attach sequential hash-chain triggers for insert and update.
 DROP TRIGGER IF EXISTS trg_merkle_source_registry ON source_registry;
-CREATE TRIGGER trg_merkle_source_registry
+DROP TRIGGER IF EXISTS trg_hash_chain_source_registry ON source_registry;
+CREATE TRIGGER trg_hash_chain_source_registry
     AFTER INSERT OR UPDATE ON source_registry
-    FOR EACH ROW EXECUTE FUNCTION process_audit_merkle_event();
+    FOR EACH ROW EXECUTE FUNCTION process_sequential_hash_chain_event();
 
 DROP TRIGGER IF EXISTS trg_merkle_criminal_events ON criminal_events;
-CREATE TRIGGER trg_merkle_criminal_events
+DROP TRIGGER IF EXISTS trg_hash_chain_criminal_events ON criminal_events;
+CREATE TRIGGER trg_hash_chain_criminal_events
     AFTER INSERT OR UPDATE ON criminal_events
-    FOR EACH ROW EXECUTE FUNCTION process_audit_merkle_event();
+    FOR EACH ROW EXECUTE FUNCTION process_sequential_hash_chain_event();
 
 DROP TRIGGER IF EXISTS trg_merkle_entities ON entities;
-CREATE TRIGGER trg_merkle_entities
+DROP TRIGGER IF EXISTS trg_hash_chain_entities ON entities;
+CREATE TRIGGER trg_hash_chain_entities
     AFTER INSERT OR UPDATE ON entities
-    FOR EACH ROW EXECUTE FUNCTION process_audit_merkle_event();
+    FOR EACH ROW EXECUTE FUNCTION process_sequential_hash_chain_event();
 
 DROP TRIGGER IF EXISTS trg_merkle_event_assertions ON event_assertions;
-CREATE TRIGGER trg_merkle_event_assertions
+DROP TRIGGER IF EXISTS trg_hash_chain_event_assertions ON event_assertions;
+CREATE TRIGGER trg_hash_chain_event_assertions
     AFTER INSERT OR UPDATE ON event_assertions
-    FOR EACH ROW EXECUTE FUNCTION process_audit_merkle_event();
+    FOR EACH ROW EXECUTE FUNCTION process_sequential_hash_chain_event();
 
 DROP TRIGGER IF EXISTS trg_merkle_entity_edges ON entity_edges;
-CREATE TRIGGER trg_merkle_entity_edges
+DROP TRIGGER IF EXISTS trg_hash_chain_entity_edges ON entity_edges;
+CREATE TRIGGER trg_hash_chain_entity_edges
     AFTER INSERT OR UPDATE ON entity_edges
-    FOR EACH ROW EXECUTE FUNCTION process_audit_merkle_event();
+    FOR EACH ROW EXECUTE FUNCTION process_sequential_hash_chain_event();
 
 --------------------------------------------------------------------------------
 -- 4. Native Hard-Delete Prevention Triggers (Section 16: RT-02)
@@ -413,18 +482,6 @@ CREATE EVENT TRIGGER trg_block_audit_drop
 -- 7. PostgreSQL Row-Level Security (RLS) & Permissions
 --------------------------------------------------------------------------------
 
-DO $$ BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opencase_app_user') THEN
-        CREATE ROLE opencase_app_user WITH NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOLOGIN;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opencase_analyst') THEN
-        CREATE ROLE opencase_analyst WITH NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'opencase_auditor') THEN
-        CREATE ROLE opencase_auditor WITH NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT;
-    END IF;
-END $$;
-
 ALTER TABLE source_registry ENABLE ROW LEVEL SECURITY;
 ALTER TABLE criminal_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
@@ -432,19 +489,113 @@ ALTER TABLE event_assertions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE entity_edges ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_merkle_ledger ENABLE ROW LEVEL SECURITY;
 
-REVOKE ALL ON TABLE audit_merkle_ledger FROM PUBLIC, opencase_app_user, opencase_analyst;
-GRANT SELECT, INSERT ON TABLE audit_merkle_ledger TO opencase_app_user, opencase_auditor;
-REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_merkle_ledger FROM PUBLIC, opencase_app_user, opencase_analyst, opencase_auditor;
+-- Only the bounded workers receive table privileges. api_worker_login and
+-- audit_replica_login have no direct grants; both must SET ROLE to a NOLOGIN
+-- worker role. The API role cannot modify the ledger directly.
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
+REVOKE ALL ON TABLE audit_merkle_ledger FROM api_worker, audit_reader;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE audit_merkle_ledger FROM api_worker, audit_reader;
+REVOKE DELETE, TRUNCATE ON source_registry, criminal_events, entities, event_assertions, entity_edges FROM api_worker;
 
-REVOKE TRUNCATE ON source_registry, criminal_events, entities, event_assertions, entity_edges FROM PUBLIC, opencase_app_user, opencase_analyst;
-GRANT SELECT, INSERT, UPDATE ON source_registry, criminal_events, entities, event_assertions, entity_edges TO opencase_app_user, opencase_analyst;
+GRANT USAGE ON SCHEMA public, app TO api_worker, audit_reader;
+GRANT SELECT, INSERT, UPDATE ON source_registry, criminal_events, entities, event_assertions, entity_edges TO api_worker;
+GRANT SELECT ON audit_merkle_ledger TO api_worker, audit_reader;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO api_worker;
+GRANT EXECUTE ON FUNCTION app.current_actor_id() TO api_worker;
+GRANT EXECUTE ON FUNCTION app.has_clearance(TEXT) TO api_worker;
 
+-- FORCE RLS so ownership cannot silently bypass policies on criminal data.
+-- audit_merkle_ledger is excluded: SECURITY DEFINER hash-chain triggers must append as db_owner.
+ALTER TABLE source_registry FORCE ROW LEVEL SECURITY;
+ALTER TABLE criminal_events FORCE ROW LEVEL SECURITY;
+ALTER TABLE entities FORCE ROW LEVEL SECURITY;
+ALTER TABLE event_assertions FORCE ROW LEVEL SECURITY;
+ALTER TABLE entity_edges FORCE ROW LEVEL SECURITY;
+
+-- Every policy demands a verified JWT clearance that database.py copied into
+-- SET LOCAL app.current_clearances for this transaction. The actor UUID is also
+-- preserved for trigger attribution and source ownership.
+DROP POLICY IF EXISTS source_read ON source_registry;
+CREATE POLICY source_read ON source_registry FOR SELECT TO api_worker
+    USING (app.has_clearance('evidence:read') OR app.has_clearance('evidence:export')
+           OR app.has_clearance('criminal:write') OR app.has_clearance('entity:resolve'));
+DROP POLICY IF EXISTS source_insert ON source_registry;
+CREATE POLICY source_insert ON source_registry FOR INSERT TO api_worker
+    WITH CHECK (app.has_clearance('evidence:ingest') AND uploaded_by_user_id = app.current_actor_id());
+DROP POLICY IF EXISTS source_update ON source_registry;
+CREATE POLICY source_update ON source_registry FOR UPDATE TO api_worker
+    USING (app.has_clearance('evidence:write'))
+    WITH CHECK (app.has_clearance('evidence:write'));
+
+DROP POLICY IF EXISTS events_read ON criminal_events;
+CREATE POLICY events_read ON criminal_events FOR SELECT TO api_worker
+    USING (app.has_clearance('criminal:read') OR app.has_clearance('criminal:write'));
+DROP POLICY IF EXISTS events_write ON criminal_events;
+CREATE POLICY events_write ON criminal_events FOR INSERT TO api_worker
+    WITH CHECK (app.has_clearance('criminal:write'));
+DROP POLICY IF EXISTS events_update ON criminal_events;
+CREATE POLICY events_update ON criminal_events FOR UPDATE TO api_worker
+    USING (app.has_clearance('criminal:write'))
+    WITH CHECK (app.has_clearance('criminal:write'));
 DROP POLICY IF EXISTS rls_deny_delete_criminal_events ON criminal_events;
-CREATE POLICY rls_deny_delete_criminal_events ON criminal_events
-    FOR DELETE
-    USING (false);
+CREATE POLICY rls_deny_delete_criminal_events ON criminal_events FOR DELETE TO api_worker USING (false);
 
+DROP POLICY IF EXISTS entities_read ON entities;
+CREATE POLICY entities_read ON entities FOR SELECT TO api_worker
+    USING (app.has_clearance('entity:read') OR app.has_clearance('entity:resolve'));
+DROP POLICY IF EXISTS entities_write ON entities;
+CREATE POLICY entities_write ON entities FOR INSERT TO api_worker
+    WITH CHECK (app.has_clearance('entity:write'));
+DROP POLICY IF EXISTS entities_update ON entities;
+CREATE POLICY entities_update ON entities FOR UPDATE TO api_worker
+    USING (app.has_clearance('entity:write'))
+    WITH CHECK (app.has_clearance('entity:write'));
+
+DROP POLICY IF EXISTS assertions_read ON event_assertions;
+CREATE POLICY assertions_read ON event_assertions FOR SELECT TO api_worker
+    USING (app.has_clearance('criminal:read') OR app.has_clearance('criminal:write'));
+DROP POLICY IF EXISTS assertions_write ON event_assertions;
+CREATE POLICY assertions_write ON event_assertions FOR INSERT TO api_worker
+    WITH CHECK (app.has_clearance('criminal:write'));
+DROP POLICY IF EXISTS assertions_update ON event_assertions;
+CREATE POLICY assertions_update ON event_assertions FOR UPDATE TO api_worker
+    USING (app.has_clearance('criminal:write'))
+    WITH CHECK (app.has_clearance('criminal:write'));
+
+DROP POLICY IF EXISTS edges_read ON entity_edges;
+CREATE POLICY edges_read ON entity_edges FOR SELECT TO api_worker
+    USING (app.has_clearance('entity:read') OR app.has_clearance('entity:resolve'));
+DROP POLICY IF EXISTS edges_write ON entity_edges;
+CREATE POLICY edges_write ON entity_edges FOR INSERT TO api_worker
+    WITH CHECK (app.has_clearance('entity:resolve'));
+DROP POLICY IF EXISTS edges_update ON entity_edges;
+CREATE POLICY edges_update ON entity_edges FOR UPDATE TO api_worker
+    USING (app.has_clearance('entity:resolve'))
+    WITH CHECK (app.has_clearance('entity:resolve'));
+
+DROP POLICY IF EXISTS ledger_api_read ON audit_merkle_ledger;
+CREATE POLICY ledger_api_read ON audit_merkle_ledger FOR SELECT TO api_worker
+    USING (app.has_clearance('audit:read') OR app.has_clearance('evidence:export'));
+DROP POLICY IF EXISTS ledger_replica_read ON audit_merkle_ledger;
+CREATE POLICY ledger_replica_read ON audit_merkle_ledger FOR SELECT TO audit_reader USING (true);
 DROP POLICY IF EXISTS rls_deny_delete_merkle_ledger ON audit_merkle_ledger;
-CREATE POLICY rls_deny_delete_merkle_ledger ON audit_merkle_ledger
-    FOR DELETE
-    USING (false);
+CREATE POLICY rls_deny_delete_merkle_ledger ON audit_merkle_ledger FOR DELETE TO api_worker, audit_reader USING (false);
+
+-- Ownership exists only to run schema migrations and SECURITY DEFINER triggers;
+-- db_owner cannot log in, so ownership does not create an application bypass.
+ALTER TABLE source_registry OWNER TO db_owner;
+ALTER TABLE criminal_events OWNER TO db_owner;
+ALTER TABLE entities OWNER TO db_owner;
+ALTER TABLE event_assertions OWNER TO db_owner;
+ALTER TABLE entity_edges OWNER TO db_owner;
+ALTER TABLE audit_merkle_ledger OWNER TO db_owner;
+ALTER TABLE hash_chain_mutex OWNER TO db_owner;
+ALTER SEQUENCE audit_merkle_ledger_leaf_index_seq OWNER TO db_owner;
+ALTER FUNCTION app.current_actor_id() OWNER TO db_owner;
+ALTER FUNCTION app.has_clearance(TEXT) OWNER TO db_owner;
+ALTER FUNCTION process_sequential_hash_chain_event() OWNER TO db_owner;
+ALTER FUNCTION enforce_criminal_events_soft_tombstone() OWNER TO db_owner;
+ALTER FUNCTION enforce_source_registry_delete_block() OWNER TO db_owner;
+ALTER FUNCTION protect_audit_ledger() OWNER TO db_owner;
+ALTER FUNCTION block_table_truncate() OWNER TO db_owner;

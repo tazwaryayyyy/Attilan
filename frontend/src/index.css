@@ -1,85 +1,234 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-@layer base {
-  body {
-    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-  }
-  code, pre, .font-mono {
-    font-family: 'JetBrains Mono', monospace;
-  }
-  .font-bangla {
-    font-family: 'Tiro Bangla', serif;
-  }
+:root {
+  color: #f4f4f1;
+  background: #121212;
+  font-family: Consolas, "IBM Plex Mono", "Courier New", monospace;
+  font-synthesis: none;
 }
 
-/* Diagonal Evidentiary Watermarks */
-.watermark-container {
+* { box-sizing: border-box; }
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: #121212;
+}
+
+button, input, textarea, select { font: inherit; }
+textarea, select {
+  width: 100%;
+  border: 1px solid #aaa;
+  border-radius: 0;
+  padding: .75rem;
+  color: #f4f4f1;
+  background: #121212;
+  outline: none;
+}
+textarea:focus, select:focus { outline: 2px solid #f4f4f1; outline-offset: 2px; }
+
+.forensic-shell {
   position: relative;
+  isolation: isolate;
+  display: grid;
+  min-height: 100vh;
+  grid-template-rows: auto auto 1fr auto;
   overflow: hidden;
+  background-color: #121212;
+  background-image: linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px);
+  background-size: 28px 28px;
 }
 
-.watermark-pretrial::before {
-  content: "PRE-TRIAL ALLEGATION • NOT JUDICIALLY PROVEN • PRE-TRIAL ALLEGATION • NOT JUDICIALLY PROVEN • ";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(-28deg);
-  font-size: 1.5rem;
-  font-weight: 800;
-  letter-spacing: 0.25em;
-  color: rgba(239, 68, 68, 0.12);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 10;
-  user-select: none;
-  width: 250%;
-  text-align: center;
-  text-transform: uppercase;
-  border-top: 2px dashed rgba(239, 68, 68, 0.15);
-  border-bottom: 2px dashed rgba(239, 68, 68, 0.15);
-  padding: 14px 0;
+.masthead, footer {
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-color: #f4f4f1;
+  border-style: solid;
+  padding: .85rem 1rem;
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .07em;
 }
 
-.watermark-unverified::before {
-  content: "UNVERIFIED INTELLIGENCE • ZERO JUDICIAL WEIGHT • UNVERIFIED INTELLIGENCE • ZERO JUDICIAL WEIGHT • ";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(-28deg);
-  font-size: 1.4rem;
-  font-weight: 800;
-  letter-spacing: 0.2em;
-  color: rgba(148, 163, 184, 0.12);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 10;
-  user-select: none;
-  width: 250%;
-  text-align: center;
-  border-top: 2px dashed rgba(148, 163, 184, 0.15);
-  border-bottom: 2px dashed rgba(148, 163, 184, 0.15);
-  padding: 12px 0;
+.masthead { border-width: 0 0 2px; }
+footer { border-width: 2px 0 0; color: #c7c7c3; }
+.masthead p, footer span { margin: 0; }
+
+.forensic-grid {
+  z-index: 1;
+  display: grid;
+  grid-template-columns: min-content minmax(0, 1fr) minmax(13rem, .7fr);
+  align-items: end;
+  gap: 1.4rem;
+  padding: clamp(1.5rem, 5vw, 5.5rem) clamp(1rem, 7vw, 8rem) 2rem;
+  border-bottom: 1px solid #666;
 }
 
-.watermark-acquitted::before {
-  content: "JUDICIALLY ACQUITTED • PRESUMPTION OF INNOCENCE RESTORED • JUDICIALLY ACQUITTED • ";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%) rotate(-28deg);
-  font-size: 1.4rem;
+.evidence-marker {
+  display: grid;
+  width: 5.4rem;
+  aspect-ratio: 1;
+  place-items: center;
+  border: 3px solid #f4f4f1;
+  font-size: 1.35rem;
   font-weight: 800;
-  letter-spacing: 0.2em;
-  color: rgba(52, 211, 153, 0.14);
-  white-space: nowrap;
-  pointer-events: none;
-  z-index: 10;
-  user-select: none;
-  width: 250%;
-  text-align: center;
-  border-top: 2px dashed rgba(52, 211, 153, 0.2);
-  border-bottom: 2px dashed rgba(52, 211, 153, 0.2);
-  padding: 12px 0;
+  transform: rotate(-8deg);
+}
+
+.eyebrow { margin: 0 0 .5rem; color: #b8b8b4; font-size: .72rem; font-weight: 700; letter-spacing: .18em; }
+h1 { margin: 0; max-width: 12ch; font-size: clamp(2.7rem, 7vw, 7rem); line-height: .82; letter-spacing: -.09em; }
+.scope-note { margin: 0; border-left: 2px solid #f4f4f1; padding-left: 1rem; color: #d2d2ce; font-size: .78rem; line-height: 1.65; }
+
+.terminal-panel {
+  z-index: 1;
+  width: min(100% - 2rem, 72rem);
+  margin: 2rem auto;
+  border: 2px solid #f4f4f1;
+  background: #121212;
+  box-shadow: 10px 10px 0 #f4f4f1;
+}
+
+.request-form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 1rem; padding: 1.1rem; border-bottom: 2px solid #f4f4f1; }
+label { display: grid; gap: .45rem; }
+label span, .terminal-status span, .manifest-output span { color: #b8b8b4; font-size: .66rem; font-weight: 700; letter-spacing: .14em; }
+input { width: 100%; border: 1px solid #aaa; border-radius: 0; padding: .75rem; color: #f4f4f1; background: #121212; outline: none; }
+input:focus { outline: 2px solid #f4f4f1; outline-offset: 2px; }
+button { border: 2px solid #f4f4f1; border-radius: 0; padding: .75rem 1rem; color: #121212; background: #f4f4f1; cursor: pointer; font-size: .72rem; font-weight: 800; letter-spacing: .06em; }
+button:disabled { cursor: wait; opacity: .55; }
+button:not(:disabled):hover { color: #f4f4f1; background: #121212; }
+
+.terminal-status { display: flex; justify-content: space-between; gap: 1rem; padding: .8rem 1.1rem; background: #292929; font-size: .7rem; }
+.terminal-status strong { letter-spacing: .05em; }
+.offline-block { margin: 1.1rem; border: 3px solid #D32F2F; padding: 1rem; color: #fff; background: #220b0b; }
+.offline-block strong { display: block; color: #D32F2F; font-size: clamp(1.4rem, 4vw, 3rem); letter-spacing: -.08em; }
+.offline-block p { margin: .7rem 0; font-weight: 800; }
+.offline-block small { color: #f4c0c0; word-break: break-word; }
+.manifest-output { padding: 1.1rem; }
+.manifest-output > div { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin-bottom: .7rem; }
+.manifest-output button { padding: .45rem .6rem; font-size: .62rem; }
+pre { overflow: auto; margin: 0; border: 1px solid #666; padding: 1rem; color: #f4f4f1; background: #1b1b1b; font-size: .72rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+
+.boundary-watermark { position: absolute; z-index: 0; width: 150%; color: rgba(244,244,241,.055); font-size: clamp(1.2rem, 3.4vw, 3rem); font-weight: 800; letter-spacing: .12em; text-align: center; pointer-events: none; user-select: none; white-space: nowrap; }
+.boundary-watermark-a { top: 31%; left: -22%; transform: rotate(-24deg); }
+.boundary-watermark-b { top: 70%; left: -20%; transform: rotate(-24deg); }
+
+.forensic-panel {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  margin: 1rem 0;
+  border: 2px solid #f4f4f1;
+  background: #121212;
+  box-shadow: 8px 8px 0 #f4f4f1;
+}
+.forensic-panel.superseded { border-color: #888; }
+.panel-head {
+  z-index: 1;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem;
+  border-bottom: 2px solid #f4f4f1;
+}
+.panel-head h2 { margin: 0; font-size: 1.1rem; letter-spacing: -.04em; }
+.stamp {
+  border: 2px solid #D32F2F;
+  color: #D32F2F;
+  padding: .35rem .55rem;
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .08em;
+}
+.panel-alert {
+  z-index: 1;
+  margin: 0;
+  padding: .85rem 1rem;
+  border-bottom: 1px solid #666;
+  color: #e8e8e4;
+  font-size: .72rem;
+  line-height: 1.55;
+}
+.panel-alert.catastrophic { color: #fff; border-left: 4px solid #D32F2F; background: #220b0b; }
+.panel-ok { margin: 0; padding: .85rem 1rem; color: #f4f4f1; font-size: .72rem; border-top: 1px solid #666; }
+.request-form.stacked { grid-template-columns: 1fr; border-bottom: 0; }
+.candidate-list { z-index: 1; list-style: none; margin: 0; padding: 0; }
+.candidate-row {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 0;
+  border-bottom: 1px solid #444;
+  border-radius: 0;
+  padding: 1rem;
+  color: #f4f4f1;
+  background: #121212;
+  text-align: left;
+}
+.candidate-row.selected { background: #1f1f1f; outline: 2px solid #f4f4f1; outline-offset: -2px; }
+.candidate-row strong { display: block; }
+.candidate-row span, .candidate-row small { display: block; color: #b8b8b4; font-size: .68rem; }
+.score-block { text-align: right; font-size: .68rem; }
+.score-block strong { display: block; font-size: 1rem; }
+.action-row { z-index: 1; display: flex; justify-content: flex-end; gap: .75rem; padding: 1rem; border-top: 1px solid #666; }
+.meta-grid {
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .75rem;
+  margin: 0;
+  padding: 1rem;
+  border-bottom: 1px solid #666;
+}
+.meta-grid dt { color: #b8b8b4; font-size: .62rem; letter-spacing: .12em; }
+.meta-grid dd { margin: .2rem 0 0; font-size: .72rem; word-break: break-all; }
+.excerpt-block, .digest-block { z-index: 1; padding: 1rem; border-bottom: 1px solid #666; }
+.excerpt-block p:last-child { margin: .4rem 0 0; font-size: .78rem; line-height: 1.6; }
+.digest-row {
+  display: grid;
+  grid-template-columns: 5rem 1fr auto;
+  gap: .75rem;
+  align-items: center;
+  margin-top: .55rem;
+  border: 1px solid #666;
+  padding: .55rem .7rem;
+  font-size: .68rem;
+}
+.digest-row code { overflow: auto; color: #f4f4f1; }
+.forensic-badge {
+  display: inline-block;
+  border: 2px solid #f4f4f1;
+  padding: .35rem .55rem;
+  font-size: .62rem;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+.forensic-badge.fault { border-color: #D32F2F; color: #D32F2F; }
+.badge-stack { display: grid; gap: .35rem; justify-items: end; }
+.modal-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, .86);
+}
+.modal-panel { width: min(100%, 42rem); margin: 0; }
+.graph-shell {
+  border: 2px solid #f4f4f1;
+  background: #121212;
+  box-shadow: 8px 8px 0 #f4f4f1;
+}
+.graph-shell .graph-canvas { height: 28rem; background: #121212; }
+.graph-shell .panel-alert { border-bottom: 1px solid #666; }
+
+@media (max-width: 760px) {
+  .masthead, footer, .forensic-grid { display: grid; grid-template-columns: 1fr; }
+  .forensic-grid { align-items: start; }
+  .request-form { grid-template-columns: 1fr; }
+  .terminal-status, .manifest-output > div, .panel-head, .candidate-row, .action-row { align-items: flex-start; flex-direction: column; }
+  .meta-grid, .digest-row { grid-template-columns: 1fr; }
 }

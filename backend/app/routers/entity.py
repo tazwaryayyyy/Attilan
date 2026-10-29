@@ -1,10 +1,15 @@
 from typing import List, Optional
 import uuid
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.database import db_manager
+from backend.app.auth import (
+    AuthenticatedUser,
+    get_secondary_authenticated_user,
+    require_clearance,
+)
 from backend.app.services.disambiguation import (
     BengaliDisambiguationEvaluator,
     BengaliPhoneticEngine,
@@ -45,9 +50,6 @@ class DualKeyResolutionRequest(BaseModel):
         description="Explicit evidentiary justification (e.g. 'CONFIRMED SAME AS VIA NID CROSS-CHECK IN SESSIONS CASE 101/2026')",
     )
     confidence_score: float = Field(..., ge=0.0, le=1.0)
-    # Strict requirement: Explicit two-user JSON keys
-    operator_key_1: str = Field(..., description="Cryptographic key / UUID of primary verifying analyst")
-    operator_key_2: str = Field(..., description="Cryptographic key / UUID of secondary reviewing supervisor")
 
 
 class ConflictResolutionResponse(BaseModel):
@@ -66,6 +68,7 @@ class ConflictResolutionResponse(BaseModel):
 async def evaluate_disambiguation_queue(
     payload: DisambiguationQuery,
     request: Request,
+    current_user: AuthenticatedUser = Depends(require_clearance("entity:read")),
 ) -> DisambiguationQueueResponse:
     """
     Computes Bengali phonetic and multi-attribute similarity against existing entity pool.
@@ -76,11 +79,16 @@ async def evaluate_disambiguation_queue(
 
     candidates: List[DisambiguationCandidate] = []
 
-    async for conn in db_manager.get_connection(client_ip=client_ip):
+    async with db_manager.connection(
+        actor_user_id=current_user.user_id,
+        actor_clearances=current_user.clearances,
+        client_ip=client_ip,
+    ) as conn:
         # Query potential matches using phonetic hash or trigram similarity
         rows = await conn.fetch(
             """
-            SELECT entity_id, primary_name_bn, primary_name_en, father_name_bn
+            SELECT entity_id, primary_name_bn, primary_name_en, father_name_bn,
+                   thana_jurisdiction, age
             FROM entities
             WHERE is_identity_disputed = FALSE
             LIMIT 50;
@@ -101,11 +109,12 @@ async def evaluate_disambiguation_queue(
                 name_bn_2=row["primary_name_bn"],
                 name_en_2=row["primary_name_en"],
                 father_name_bn_2=row["father_name_bn"],
-                thana_2=payload.thana_jurisdiction,  # Compared against jurisdiction context
-                age_2=payload.age,
+                thana_2=row["thana_jurisdiction"],
+                age_2=row["age"],
             )
-            # Surface if above threshold or high similarity
-            if candidate.composite_score >= 0.50:
+            # Never queue candidates with a recorded attribute divergence, even
+            # where names alone would produce a deceptively high score.
+            if candidate.action != "BLOCKED_DIVERGENCE" and candidate.composite_score >= 0.50:
                 candidates.append(candidate)
 
         # Sort descending by composite score
@@ -117,18 +126,12 @@ async def evaluate_disambiguation_queue(
             candidate_matches=candidates,
         )
 
-    # Fallback response if database connection pool is offline
-    return DisambiguationQueueResponse(
-        query_name_bn=payload.primary_name_bn,
-        query_father_name_bn=payload.father_name_bn,
-        candidate_matches=[],
-    )
-
-
 @router.post("/resolve_conflict", response_model=ConflictResolutionResponse, status_code=status.HTTP_201_CREATED)
 async def resolve_disambiguation_conflict(
     payload: DualKeyResolutionRequest,
     request: Request,
+    primary_user: AuthenticatedUser = Depends(require_clearance("entity:resolve")),
+    secondary_user: AuthenticatedUser = Depends(get_secondary_authenticated_user),
 ) -> ConflictResolutionResponse:
     """
     VITAL SECURITY BARRIER:
@@ -142,25 +145,28 @@ async def resolve_disambiguation_conflict(
             detail="Cannot establish resolution edge to self.",
         )
 
-    # Dual-Control Verification
-    if payload.operator_key_1.strip() == payload.operator_key_2.strip():
+    # Dual-control identities come from two independently signed bearer tokens.
+    if "entity:resolve" not in secondary_user.clearances:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="SECURITY RESTRICTION: Resolution requires two distinct, non-identical operator keys (Four-Eyes Principle).",
+            detail="Second approver lacks entity:resolve clearance.",
+        )
+    if primary_user.user_id == secondary_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SECURITY RESTRICTION: Two independently authenticated human principals are required.",
         )
 
-    try:
-        user1_uuid = uuid.UUID(payload.operator_key_1)
-        user2_uuid = uuid.UUID(payload.operator_key_2)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Operator keys must be valid UUID credentials.",
-        )
+    user1_uuid = primary_user.user_id
+    user2_uuid = secondary_user.user_id
 
     client_ip = request.client.host if request.client else "127.0.0.1"
 
-    async for conn in db_manager.get_connection(actor_user_id=user1_uuid, client_ip=client_ip):
+    async with db_manager.connection(
+        actor_user_id=user1_uuid,
+        actor_clearances=primary_user.clearances,
+        client_ip=client_ip,
+    ) as conn:
         # Verify both entities exist
         entity_a = await conn.fetchrow("SELECT entity_id FROM entities WHERE entity_id = $1", payload.entity_a_id)
         entity_b = await conn.fetchrow("SELECT entity_id FROM entities WHERE entity_id = $1", payload.entity_b_id)
@@ -223,4 +229,3 @@ async def resolve_disambiguation_conflict(
             message="Entities successfully linked via explicit SAME_AS edge pointer. Both original UUIDs and data lineages remain independent and unmerged.",
         )
 
-    raise HTTPException(status_code=500, detail="Database connection failed.")

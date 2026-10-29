@@ -3,10 +3,11 @@ import io
 from typing import Optional
 import uuid
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
 from backend.app.database import db_manager
+from backend.app.auth import AuthenticatedUser, require_clearance
 from backend.app.services.hasher import CryptographicHasher
 from backend.app.services.storage import storage_service
 
@@ -26,7 +27,7 @@ class IngestResponse(BaseModel):
     ingestion_timestamp: datetime
     uploaded_by_user_id: uuid.UUID
     evidentiary_note: str = Field(
-        default="WORM Compliant. Cryptographically hashed via SHA-256 and BLAKE3. Merkle ledger entry recorded."
+        default="WORM Compliant. Cryptographically hashed via SHA-256 and BLAKE3. Sequential hash-chain ledger entry recorded."
     )
 
 
@@ -39,6 +40,7 @@ async def ingest_evidence_document(
     issuing_authority: str = Form(..., description="Issuing body (e.g. 'Sessions Court Khulna', 'KMP Labanchora')"),
     publication_date: date = Form(..., description="Publication or issuance date"),
     source_signature: Optional[str] = Form(None, description="Hex/Base64 digital signature from source if present"),
+    current_user: AuthenticatedUser = Depends(require_clearance("evidence:ingest")),
 ) -> IngestResponse:
     """
     Ingestion & Immutable Provenance Pipeline:
@@ -46,7 +48,7 @@ async def ingest_evidence_document(
     2. Compute SHA-256 and BLAKE3 digests.
     3. Check `source_registry` for existing SHA-256 hash (strict anti-duplication).
     4. Store payload in MinIO WORM Object Lock storage bucket under COMPLIANCE retention mode.
-    5. Commit record to PostgreSQL `source_registry` (trigger automatically writes leaf to `audit_merkle_ledger`).
+    5. Commit record to PostgreSQL `source_registry` (trigger appends sequential hash-chain leaf).
     """
     valid_source_types = {"COURT_ORDER", "POLICE_FIR", "GAZETTE", "INVESTIGATIVE_REPORT"}
     if source_type.upper() not in valid_source_types:
@@ -68,19 +70,19 @@ async def ingest_evidence_document(
     # 1. Calculate dual cryptographic hashes
     sha256_hash, blake3_hash, file_size = CryptographicHasher.compute_stream_hashes(buffer)
 
-    # Extract user ID and IP for actor attribution in Merkle Ledger
-    actor_header = request.headers.get("X-Actor-User-Id")
-    try:
-        actor_user_id = uuid.UUID(actor_header) if actor_header else uuid.uuid4()
-    except ValueError:
-        actor_user_id = uuid.uuid4()
+    # Actor attribution is derived exclusively from the verified bearer token.
+    actor_user_id = current_user.user_id
 
     client_ip = request.client.host if request.client else "127.0.0.1"
 
     source_sig_bytes = bytes.fromhex(source_signature) if source_signature else None
 
     # Database connection & existence check
-    async for conn in db_manager.get_connection(actor_user_id=actor_user_id, client_ip=client_ip):
+    async with db_manager.connection(
+        actor_user_id=actor_user_id,
+        actor_clearances=current_user.clearances,
+        client_ip=client_ip,
+    ) as conn:
         # Check if identical hash has already been registered
         existing_row = await conn.fetchrow(
             "SELECT source_id, ingestion_timestamp, storage_uri FROM source_registry WHERE sha256_hash = $1",
@@ -121,7 +123,7 @@ async def ingest_evidence_document(
                 detail=f"WORM Storage failure during S3 compliance put: {str(err)}",
             )
 
-        # 3. Insert into PostgreSQL source_registry (Triggers audit_merkle_ledger leaf entry)
+        # 3. Insert into PostgreSQL source_registry (trigger appends sequential hash-chain leaf)
         source_id = uuid.uuid4()
         now = datetime.now()
 
@@ -173,4 +175,3 @@ async def ingest_evidence_document(
             uploaded_by_user_id=actor_user_id,
         )
 
-    raise HTTPException(status_code=500, detail="Database pool initialization failed.")

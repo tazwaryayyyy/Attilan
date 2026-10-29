@@ -1,35 +1,34 @@
 from typing import Optional
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import PlainTextResponse
 
 from backend.app.database import db_manager
-from backend.app.services.cert_builder import CertificateGenerator, S65BCertificateModel
+from backend.app.auth import AuthenticatedUser, require_clearance
+from backend.app.services.cert_builder import DigestManifestGenerator, RawDigestManifest
 
 router = APIRouter(prefix="/export", tags=["Section 65B(4) Evidence Export Engine"])
 
 
-@router.get("/certificate/{source_id}", response_model=S65BCertificateModel)
-async def generate_section_65b_certificate(
+@router.get("/certificate/{source_id}", response_model=RawDigestManifest)
+async def generate_raw_digest_manifest(
     source_id: uuid.UUID,
     request: Request,
     format: Optional[str] = Query(default="json", description="'json' or 'markdown'"),
+    current_user: AuthenticatedUser = Depends(require_clearance("evidence:export")),
 ):
     """
-    Evidence (Amendment) Act 2022, Section 65B(4) Certificate Builder:
-    Extracts the immutable source record, database dual hashes (SHA-256 + BLAKE3),
-    host server uptime metrics, Merkle ledger sequence leaf, and operator authorization.
+    Returns an unsigned raw-digest manifest. It is not a Section 65B certificate
+    and contains no claim of CA/HSM signing or structural tamper verification.
     """
-    actor_header = request.headers.get("X-Actor-User-Id")
-    try:
-        operator_uuid = uuid.UUID(actor_header) if actor_header else uuid.uuid4()
-    except ValueError:
-        operator_uuid = uuid.uuid4()
-
     client_ip = request.client.host if request.client else "127.0.0.1"
 
-    async for conn in db_manager.get_connection(actor_user_id=operator_uuid, client_ip=client_ip):
+    async with db_manager.connection(
+        actor_user_id=current_user.user_id,
+        actor_clearances=current_user.clearances,
+        client_ip=client_ip,
+    ) as conn:
         # 1. Fetch document from source_registry
         source_row = await conn.fetchrow(
             """
@@ -48,8 +47,8 @@ async def generate_section_65b_certificate(
                 detail=f"Source record with ID '{source_id}' was not found in source_registry.",
             )
 
-        # 2. Fetch corresponding Merkle audit ledger entry
-        merkle_row = await conn.fetchrow(
+        # 2. Fetch corresponding sequential hash-chain ledger entry.
+        ledger_row = await conn.fetchrow(
             """
             SELECT leaf_index, timestamp, current_leaf_hash, preceding_leaf_hash
             FROM audit_merkle_ledger
@@ -60,15 +59,13 @@ async def generate_section_65b_certificate(
             source_id,
         )
 
-        cert = CertificateGenerator.generate_certificate(
+        manifest = DigestManifestGenerator.generate_manifest(
             source_record=dict(source_row),
-            merkle_record=dict(merkle_row) if merkle_row else None,
-            operator_uuid=operator_uuid,
+            ledger_record=dict(ledger_row) if ledger_row else None,
+            requested_by=current_user.user_id,
         )
 
         if format.lower() == "markdown":
-            return PlainTextResponse(content=cert.markdown_representation, media_type="text/markdown")
+            return PlainTextResponse(content=manifest.markdown_representation, media_type="text/markdown")
 
-        return cert
-
-    raise HTTPException(status_code=500, detail="Database connection failed.")
+        return manifest

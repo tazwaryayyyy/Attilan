@@ -47,6 +47,8 @@ jobs:
       - name: Initialize Cryptographic Schema & Native C-Level DDL Triggers
         env:
           PGPASSWORD: postgres
+          API_WORKER_PASSWORD: ci_worker_password
+          AUDIT_REPLICA_PASSWORD: ci_audit_replica_password
         run: |
           psql -h localhost -p 5432 -U postgres -d opencase_test -f database/schema_stage1.sql
 
@@ -58,8 +60,10 @@ jobs:
       - name: Execute Adversarial Red-Team Test Suite
         env:
           TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/opencase_test
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/opencase_test
+          DATABASE_URL: postgresql://api_worker_login:ci_worker_password@localhost:5432/opencase_test
           JWT_SECRET_KEY: ci_secret_key_testing_environment_only_12345
+          JWT_ISSUER: attilan-test-issuer
+          JWT_AUDIENCE: attilan-test-audience
           APP_PRIVATE_SIGNING_KEY: ci_signing_key_testing_environment_only_1234567890
           PYTHONPATH: .
         run: |

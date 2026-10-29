@@ -15,6 +15,7 @@ from backend.app.services.disambiguation import (
     BengaliPhoneticEngine,
     commit_same_as_link,
 )
+from backend.tests.conftest import auth_headers
 
 # Core connection string to your test PostgreSQL 17 DB containing Stage 1 Schema.
 # You must have your testing container active (e.g., POSTGRES_DB=opencase_test).
@@ -24,7 +25,18 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "postgres://postgres:postgres
 @pytest_asyncio.fixture(scope="function")
 async def live_db_conn():
     """Establish a direct, low-level asyncpg connection mimicking DBA terminal access."""
-    conn = await asyncpg.connect(TEST_DATABASE_URL)
+    try:
+        conn = await asyncpg.connect(TEST_DATABASE_URL)
+    except (OSError, asyncpg.PostgresError) as exc:
+        pytest.skip(f"Live PostgreSQL unavailable for adversarial DDL tests: {exc}")
+    await conn.execute(
+        "SELECT set_config('app.current_actor_id', $1, false)",
+        str(uuid.uuid4()),
+    )
+    await conn.execute(
+        "SELECT set_config('app.current_clearances', $1, false)",
+        '["criminal:write","entity:resolve","evidence:ingest"]',
+    )
     yield conn
     await conn.close()
 
@@ -44,7 +56,10 @@ class TestRT01FabricatedLawfare:
         
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
-            headers = {"X-Actor-User-Id": user_uuid}
+            headers = auth_headers(uuid.UUID(user_uuid), ["criminal:write"])
+            spoofed_actor = str(uuid.uuid4())
+            # Spoofed identity header must be ignored; JWT sub is the only actor source.
+            headers["X-Actor-User-Id"] = spoofed_actor
             payload = {
                 "parent_case_number": "Khulna PS Case No. 99(09)2026",
                 "event_type": "FIR_REGISTRATION",
@@ -69,8 +84,10 @@ class TestRT01FabricatedLawfare:
             # MANDATE 2: Active incident tables must reject the payload ID
             assert data.get("active_event_id") is None
             
-            # MANDATE 3: Threat Audit trailing MUST capture the precise actor UUID attempting lawfare
+            # MANDATE 3: Threat audit uses the verified JWT subject, never the spoofed header.
             assert user_uuid in caplog.text
+            assert spoofed_actor not in caplog.text
+            assert data["actor_user_id"] == user_uuid
             assert "SECURITY WARNING" in caplog.text
 
 
@@ -81,7 +98,7 @@ class TestRT01FabricatedLawfare:
 class TestRT02RogueDBADestructiveAction:
     """
     RT-02: LIVE EXECUTION TEST. A Rogue DBA / Threat Tier 3 executes raw SQL 
-    to TRUNCATE the Merkle ledger or hard-delete events.
+    to TRUNCATE the sequential hash-chain ledger or hard-delete events.
     This tests the Stage 1 DDL and RLS Database rules on the Postgres level, NOT MOCKS.
     """
     async def test_live_dba_truncate_audit_ledger_blocked(self, live_db_conn: asyncpg.Connection):
@@ -254,8 +271,8 @@ class TestRT04FalseIdentityMerge:
             entity_a_id=e_uuid_1,
             entity_b_id=e_uuid_2,
             source_document_id=source_doc,
-            operator_key_1="AUTHORIZER_IDEN_X",
-            operator_key_2="VALIDATOR_IDEN_Y",
+            primary_authenticated_user_id=str(uuid.uuid4()),
+            secondary_authenticated_user_id=str(uuid.uuid4()),
             contextual_label="MANUAL_MERGE_OFFICER_AUTHORIZED"
         )
         
